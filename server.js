@@ -27,10 +27,11 @@ function handleError(err, res) {
 // Helper Functions
 
 function searchToLatLong(request, response){
-    const locationName = request.query.data;
+    // const locationName = request.query.data;
 
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${request.query.data}&key=${process.env.GEOCODE_API_KEY}`;
-//    const locationName = request.query.data;
+   
+    const locationName = request.query.data;
 
    superagent.get(url).then(res => {
        const location = new Location(locationName, res.body)
