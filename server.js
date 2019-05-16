@@ -45,6 +45,7 @@ function Location(locationQuery, locationInfo) {
 }
 
 function getWeather(request, response) {
+  console.log(request.query.data.formatted_query)
    const url = `https://api.darksky.net/forecast/${process.env.WEATHER_API_KEY}/${request.query.data.latitude},${request.query.data.longitude}`;
 
    return superagent.get(url)
@@ -69,6 +70,8 @@ function getEvents(request, response) {
     return superagent.get(url)
     .then(result => {
         const events = result.body.events.map(eventData => {
+          console.log("Start monkey data");
+          console.log(eventData);
             const event = new Event(eventData);
             return event;
         });
@@ -78,9 +81,8 @@ function getEvents(request, response) {
 }
 
 function Event(eventData) {
- 
-    this.link = eventData.ticket_classes.resource_url;
-    this.name = eventData.ticket_classes.name;
+    this.link = eventData.url;
+    this.name = eventData.name.text;
     this.event_date = eventData.something;
     this.summary = eventData.summary
 }
