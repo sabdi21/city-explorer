@@ -15,8 +15,8 @@ app.use(cors());
 
 // API Routes
 app.get('/location', searchToLatLong);
-
 app.get('/weather', getWeather);
+app.get('/events', getEvents);
 
 //error handler
 function handleError(err, res) {
@@ -25,42 +25,32 @@ function handleError(err, res) {
 }
 
 // Helper Functions
-
 function searchToLatLong(request, response){
-    const locationName = request.query.data;
-
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${request.query.data}&key=${process.env.GEOCODE_API_KEY}`;
-//    const locationName = request.query.data;
+    const locationQuery = request.query.data;
 
-   superagent.get(url).then(res => {
-       const location = new Location(locationName, res.body)
+    superagent.get(url).
+    then(apiResoponse => {
+       const location = new Location(locationQuery, apiResoponse.body)
        response.send(location)
-
-   }).catch(error => {
-       console.error(error);
-       response.status(500).send('Status: 500. So sorry, something went wrong.');
-   });
+    })
+   .catch(error => handlError(error, response));
 }
 
-function searchToLatLongOld(query) {
- const geoData = require('./data/geo.json');
- const location = new Location(query, geoData);
- return location;
-}
-
-function Location(query, res) {
- this.search_query = query;
- this.formatted_query = res.results[0].formatted_address;
- this.latitude = res.results[0].geometry.location.lat;
- this.longitude = res.results[0].geometry.location.lng;
+function Location(locationQuery, locationInfo) {
+ this.search_query = locationQuery;
+ this.formatted_query = locationInfo.results[0].formatted_address;
+ this.latitude = locationInfo.results[0].geometry.location.lat;
+ this.longitude = locationInfo.results[0].geometry.location.lng;
 }
 
 function getWeather(request, response) {
+  console.log(request.query.data.formatted_query)
    const url = `https://api.darksky.net/forecast/${process.env.WEATHER_API_KEY}/${request.query.data.latitude},${request.query.data.longitude}`;
 
    return superagent.get(url)
-     .then(result => {
-       const weatherSummaries = result.body.daily.data.map(day => {
+     .then(apiResponse => {
+       const weatherSummaries = apiResponse.body.daily.data.map(day => {
          return new Weather(day);
        });
 
@@ -73,6 +63,30 @@ function Weather(day) {
  this.forecast = day.summary;
  this.time = new Date(day.time * 1000).toString().slice(0, 15);
 }
+
+function getEvents(request, response) {
+    const url = `https://www.eventbriteapi.com/v3/events/search?token=${process.env.EVENTBRITE_API_KEY}&location.address=${request.query.data.formatted_query}`;
+
+    return superagent.get(url)
+    .then(result => {
+        const events = result.body.events.map(eventData => {
+          console.log("Start monkey data");
+          console.log(eventData);
+            const event = new Event(eventData);
+            return event;
+        });
+        response.send(events);
+    })
+    .catch(error => handleError(error, response));
+}
+
+function Event(eventData) {
+    this.link = eventData.url;
+    this.name = eventData.name.text;
+    this.event_date = eventData.something;
+    this.summary = eventData.summary
+}
+
 
 // Make sure the server is listening for requests
 app.listen(PORT, () => console.log(`App is up on ${PORT}`));
