@@ -1,3 +1,4 @@
+
 'use strict';
 
 // Load Environment Variables from the .env file
@@ -12,84 +13,87 @@ const pg = require('pg');
 // Application Setup
 const PORT = process.env.PORT || 3000;
 const app = express();
-const client = new pg.Client(process.env.DATABASE_URL); 
-client.connect();
-client.on('error', err => console.error(err))
 app.use(cors());
 
-//Error handler
+//Database setup
+const client = new pg.Client(process.env.DATABASE_URL);
+client.connect();
+client.on('err', err => console.log(err));
+
+
+// API Routes
+app.get('/location', getLocation);
+app.get('/weather', getWeather);
+app.get('/events', getEvents);
+app.get('/yelp', getYelp);
+app.get('/movies', getMovies);
+app.get('/trails', getTrails);
+
+//error handler
 function handleError(err, res) {
   console.error(err);
   if (res) res.status(500).send('Sorry, something went wrong');
-}
-
-//API Routes 
-app.get('/weather', getWeatherFromSQL);
-app.get('/events', getEvents);
-app.get('/location', getLocationFromSQL);
-app.get('/movies', getMovies);
-//app.get('/trails', getTrails);
-//app.get('/yelp', getYelp);
+};
 
 //cache timeout
 const timeouts = {
   weather: 15 * 1000,
+  yelp: 24 * 1000 * 60 * 60,
   movies: 30 * 1000 * 60 * 60 * 24,
   eventbrite: 6 * 1000 * 60 * 60,
-  //trails: 7 * 1000 * 60 * 60 * 24,
-  //yelp: 24 * 1000 * 60 * 60,
+  trails: 7 * 1000 * 60 * 60 * 24,
 }
 
-//Constructor Functions
-function Location(query, data) {
-  this.search_query = query;
-  this.formatted_query = data.formatted_address;
-  this.latitude = data.geometry.location.lat;
-  this.longitude = data.geometry.location.lng;
- }
+// Make sure the server is listening for requests
+app.listen(PORT, () => console.log(`App is up on ${PORT}`));
 
- function Weather(day) {
-  this.forecast = day.summary;
-  this.time = new Date(day.time * 1000).toString().slice(0, 15);
- }
+// lookup results in database
+function lookup(options) {
+  const SQL = `SELECT * FROM ${options.tableName} WHERE location_id=$1;`;
+  const values = [options.location];
 
- function Event(event) {
-  this.link = event.url;
-  this.name = event.name.text;
-  this.event_date = new Date(event.start.local).toString().slice(0, 15);
-  this.summary = event.summary
-}
-
-function Movie(movie) {
-  this.title = movies.title;
-  this.overview = movies.overview;
-  this.overview = movies.overview
-  this.average_votes = movie.average_votes;
-  this.total_votes = movie.vote_count;
-  this.image_url = 'https://image.tmdb.org/t/p/w500' + movie.poster_path;
-  this.popularity = movie.popularity;
-  this.released_on = movie.released_date;
-  this.created_at = Date.now();
-}
-
-//Fetch location from google
-Location.lookupLocation = (handler) => {
-  const SQL = `SELECT * FROM locations WHERE search_query=$1`;
-  const values = [handler.query];
-
-  return client.query( SQL, values )
-    .then( results => {
-      if( results.rowCount > 0 ) {
-        handler.cacheHit(results);
-      }
-      else {
-        handler.cacheMiss();
+  client.query(SQL, values)
+    .then(result => {
+      if (result.rowCount > 0) {
+        options.cacheHit(result);
+      } else {
+        options.cacheMiss();
       }
     })
-    .catch( console.error );
-};
+    .catch(error => handleError(error));
+}
 
-//prototypes//
+//remove location results if there too old 
+function deleteByLocationid(table, city) {
+  const SQL = `DELETE from ${table} WHERE location_id=${city};`;
+  return client.query(SQL);
+}
+
+// Constructor  functions 
+function Location(query, res) {
+  this.tableName = 'locations';
+  this.search_query = query;
+  this.formatted_query = res.body.results[0].formatted_address;
+  this.latitude = res.body.results[0].geometry.location.lat;
+  this.longitude = res.body.results[0].geometry.location.lng;
+  this.created_at = Date.now();
+}
+//check the database for saved location
+Location.lookuplocation = (location) => {
+  const SQL = `SELECT * FROM locations WHERE search_query=$1;`;
+  const values = [location.query];
+
+  return client.query(SQL, values)
+    .then(result => {
+      if (result.rowCount > 0) {
+        location.cacheHit(result);
+      } else {
+        location.cacheMiss();
+      }
+    })
+    .catch(console.error);
+}
+
 Location.prototype = {
   save: function () {
     const SQL = `INSERT INTO locations (search_query, formatted_query, latitude, longitude) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id;`;
@@ -103,6 +107,15 @@ Location.prototype = {
 
   }
 };
+
+
+function Weather(day) {
+  this.tableName = 'weathers';
+  this.forecast = day.summary;
+  this.time = new Date(day.time * 1000).toString().slice(0, 15);
+  this.created_at = Date.now();
+}
+
 Weather.tableName = 'weathers';
 Weather.lookup = lookup;
 Weather.deleteByLocationid = deleteByLocationid;
@@ -114,16 +127,61 @@ Weather.prototype = {
     client.query(SQL, values);
   }
 }
+
+function Yelp(business) {
+  this.tableName = 'yelps';
+  this.name = business.name;
+  this.image_url = business.image_url;
+  this.price = business.price;
+  this.rating = business.rating;
+  this.url = business.url;
+  this.created_at = Date.now();
+}
+
+Yelp.tableName = 'yelps';
+Yelp.lookup = lookup;
+Yelp.deleteByLocationid = deleteByLocationid;
+
+Yelp.prototype = {
+  save: function (location_id) {
+    const SQL = `INSERT INTO ${this.tableName} (name, image_url, price, rating, url, created_at, location_id) VALUES ($1, $2, $3, $4, $5, $6, $7);`;
+    const values = [this.name, this.image_url, this.price, this.rating, this.url, this.created_at, location_id];
+    client.query(SQL, values);
+  }
+}
+
+function Movie(movie) {
+  this.tableName = 'movies';
+  this.title = movie.title;
+  this.overview = movie.overview;
+  this.average_votes = movie.average_votes;
+  this.total_votes = movie.vote_count;
+  this.image_url = 'https://image.tmdb.org/t/p/w500' + movie.poster_path;
+  this.popularity = movie.popularity;
+  this.released_on = movie.released_date;
+  this.created_at = Date.now();
+}
+
 Movie.tableName = 'movies';
 Movie.lookup = lookup;
 Movie.deleteByLocationid = deleteByLocationid;
 
 Movie.prototype = {
-  save: function () {
+  save: function (location_id) {
     const SQL = `INSERT INTO ${this.tableName} (title, overview, average_votes, total_votes, image_url, popularity, released_on, created_at, location_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`;
     const values = [this.title, this.overview, this.average_votes, this.total_votes, this.image_url, this.popularity, this.released_on, this.created_at, location_id];
     client.query(SQL, values);
   }
+}
+
+
+function Event(event) {
+  this.tableName = 'events';
+  this.link = event.url;
+  this.name = event.name.text;
+  this.event_date = new Date(event.start.local).toString().slice(0, 15);
+  this.summary = event.summary;
+  this.created_at = Date.now();
 }
 
 Event.tableName = 'events';
@@ -131,15 +189,41 @@ Event.lookup = lookup;
 Event.deleteByLocationid = deleteByLocationid;
 
 Event.prototype = {
-  save: function (location_id) {
+  save: function(location_id) {
     const SQL = `INSERT INTO ${this.tableName} (link, name, event_date, summary, created_at, location_id) VALUES ($1, $2, $3, $4, $5, $6);`;
     const values = [this.link, this.name, this.event_date, this.summary, this.created_at, location_id];
     client.query(SQL, values);
   }
 }
 
-//HELPER Function
-function getLocationFromSQL(request, response) {
+function Trail(trail) {
+  this.tableName = 'trails';
+  this.name = trail.name;
+  this.location = trail.location;
+  this.length = trail.length;
+  this.stars = trail.stars;
+  this.star_votes = trail.starVotes;
+  this.summary = trail.summary;
+  this.trail_url = trail.url;
+  this.conditions = trail.conditionDetails;
+  this.condition_date = trail.conditionDate.slice(0, 10);
+  this.condition_time = trail.conditionDate.slice(12);
+  this.created_at = Date.now();
+}
+
+Trail.tableName = 'trails';
+Trail.lookup = lookup;
+Trail.deleteByLocationid = deleteByLocationid;
+
+Trail.prototype = {
+  save: function (location_id) {
+    const SQL = `INSERT INTO ${this.tableName} (name, location, length, stars, star_votes, summary, trail_url, conditions, condition_date, condition_time, created_at, location_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);`;
+    const values = [this.name, this.location, this.length, this.stars, this.star_votes, this.summary, this.trail_url, this.conditions, this.condition_date, this.condition_time, this.created_at, location_id];
+    client.query(SQL, values)
+  }
+}
+
+function getLocation(request, response) {
   Location.lookuplocation({
     tableName: Location.tableName,
     query: request.query.data,
@@ -162,25 +246,7 @@ function getLocationFromSQL(request, response) {
   })
 }
 
-function fetchLocationFromApi(query, response) {
-  const _URL = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GEOCODE_API_KEY}`;
-  return superagent.get(_URL)
-      .then(data => {
-          console.log('GETTING LOCATION FROM API');
-          if (!data.body.results.length) { throw 'No Data'; }
-          else {
-              const location = new Location(query, data.body.results[0]);
-              const NEWSQL = `INSERT INTO locations (search_query,formatted_query,latitude,longitude) VALUES($1,$2,$3,$4);`;
-              const newValues = Object.values(location);
-              return client.query(NEWSQL, newValues)
-                  .then(() => response.send(location))
-          }
-      });
-}
-
-
-//weather//
-function getWeatherFromSQL(request, response) {
+function getWeather(request, response) {
   Weather.lookup({
     tableName: Weather.tableName,
     location: request.query.data.id,
@@ -211,15 +277,15 @@ function getWeatherFromSQL(request, response) {
   })
 }
 
-//events//
-function getEvents(request, response) {
-  Event.lookup({
-    tableName: Event.tableName,
+function getYelp(request, response) {
+  Yelp.lookup({
+    tableName: Yelp.tableName,
     location: request.query.data.id,
+
     cacheHit: function (result) {
       let ageOfResults = (Date.now() - result.rows[0].created_at);
-      if (ageOfResults > timeouts.events) {
-        Event.deleteByLocationId(Event.tableName, request.query.data.id);
+      if (ageOfResults > timeouts.yelp) {
+        Yelp.deleteByLocationId(Yelp.tableName, request.query.data.id);
         this.cacheMiss();
       } else {
         response.send(result.rows);
@@ -227,23 +293,23 @@ function getEvents(request, response) {
     },
 
     cacheMiss: function () {
-      const url = `https://www.eventbriteapi.com/v3/events/search?token=${process.env.EVENTBRITE_API_KEY}&location.address=${request.query.data.formatted_query}`
+      const url = `https://api.yelp.com/v3/businesses/search?location=${request.query.data.search_query}`;
 
       superagent.get(url)
+        .set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
         .then(result => {
-          const events = result.body.events.map(eventData => {
-            const event = new Event(eventData);
-            event.save(request.query.data.id);
-            return event;
+          const yelpSummaries = result.body.businesses.map(business => {
+            const review = new Yelp(business);
+            review.save(request.query.data.id);
+            return review;
           });
-          response.send(events);
+          response.send(yelpSummaries);
         })
         .catch(error => handleError(error, response));
     }
   })
 }
 
-//movies//
 function getMovies(request, response) {
   Movie.lookup({
     tableName: Movie.tableName,
@@ -276,28 +342,65 @@ function getMovies(request, response) {
   })
 }
 
-// lookup results in database
-function lookup(options) {
-  const SQL = `SELECT * FROM ${options.tableName} WHERE location_id=$1;`;
-  const values = [options.location];
-
-  client.query(SQL, values)
-    .then(result => {
-      if (result.rowCount > 0) {
-        options.cacheHit(result);
+function getEvents(request, response) {
+  Event.lookup({
+    tableName: Event.tableName,
+    location: request.query.data.id,
+    cacheHit: function (result) {
+      let ageOfResults = (Date.now() - result.rows[0].created_at);
+      if (ageOfResults > timeouts.events) {
+        Event.deleteByLocationId(Event.tableName, request.query.data.id);
+        this.cacheMiss();
       } else {
-        options.cacheMiss();
+        response.send(result.rows);
       }
-    })
-    .catch(error => handleError(error));
+    },
+
+    cacheMiss: function () {
+      const url = `https://www.eventbriteapi.com/v3/events/search?token=${process.env.EVENTBRITE_API_KEY}&location.address=${request.query.data.formatted_query}`
+
+      superagent.get(url)
+        .then(result => {
+          const events = result.body.events.map(eventData => {
+            const event = new Event(eventData);
+            event.save(request.query.data.id);
+            return event;
+          });
+          response.send(events);
+        })
+        .catch(error => handleError(error, response));
+    }
+  })
 }
 
-//remove location results if there too old 
-function deleteByLocationid(table, city) {
-  const SQL = `DELETE from ${table} WHERE location_id=${city};`;
-  return client.query(SQL);
+function getTrails(request, response) {
+  Trail.lookup({
+    tableName: Trail.tableName,
+    location: request.query.data.id,
+
+    cacheHit: function (result) {
+      let ageOfResults = (Date.now() - result.rows[0].created_at);
+      if (ageOfResults > timeouts.trails) {
+        Trail.deleteByLocationId(Trail.tableName, request.query.data.id);
+        this.cacheMiss();
+      } else {
+        response.send(result.rows);
+      }
+    },
+
+    cacheMiss: function () {
+      const url = `https://www.hikingproject.com/data/get-trails?lat=${request.query.data.latitude}&lon=${request.query.data.longitude}&maxDistance=200&key=${process.env.TRAIL_API_KEY}`;
+
+      superagent.get(url)
+        .then(result => {
+          const trails = result.body.trails.map(trail => {
+            const condition = new Trail(trail);
+            condition.save(request.query.data.id);
+            return condition;
+          });
+          response.send(trails);
+        })
+        .catch(error => handleError(error, response));
+    }
+  })
 }
-
-// Make sure the server is listening for requests
-app.listen(PORT, () => console.log(`App is up on ${PORT}`));
-
